@@ -172,7 +172,11 @@ namespace Microsoft.PowerShell.Commands.Internal.Format
                     ci.width = colHeader.width;
                     ci.alignment = colHeader.alignment;
                     if (colHeader.label != null)
+                    {
+                        ci.HeaderMatchesProperty = so.Properties[colHeader.label.text] is not null || !ExperimentalFeature.IsEnabled(ExperimentalFeature.PSCustomTableHeaderLabelDecoration);
+
                         ci.label = this.dataBaseInfo.db.displayResourceManagerCache.GetTextTokenString(colHeader.label);
+                    }
                 }
 
                 if (ci.alignment == TextAlignment.Undefined)
@@ -233,10 +237,7 @@ namespace Microsoft.PowerShell.Commands.Internal.Format
                         ci.propertyName = (string)key;
                 }
 
-                if (ci.propertyName == null)
-                {
-                    ci.propertyName = this.activeAssociationList[k].ResolvedExpression.ToString();
-                }
+                ci.propertyName ??= this.activeAssociationList[k].ResolvedExpression.ToString();
 
                 // set the width of the table
                 if (a.OriginatingParameter != null)
@@ -391,10 +392,7 @@ namespace Microsoft.PowerShell.Commands.Internal.Format
                 }
             }
 
-            if (matchingRowDefinition == null)
-            {
-                matchingRowDefinition = match.BestMatch as TableRowDefinition;
-            }
+            matchingRowDefinition ??= match.BestMatch as TableRowDefinition;
 
             if (matchingRowDefinition == null)
             {
@@ -412,10 +410,7 @@ namespace Microsoft.PowerShell.Commands.Internal.Format
                         }
                     }
 
-                    if (matchingRowDefinition == null)
-                    {
-                        matchingRowDefinition = match.BestMatch as TableRowDefinition;
-                    }
+                    matchingRowDefinition ??= match.BestMatch as TableRowDefinition;
                 }
             }
 

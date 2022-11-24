@@ -5343,13 +5343,9 @@ namespace System.Management.Automation.Language
                 if (!isGeneric || genericTypeArg != null)
                 {
                     var temp = Expression.Variable(typeof(object));
-                    if (expr == null)
-                    {
-                        // If expr is not null, it's the fallback when no member exists.  If it is null,
-                        // the fallback is the result from PropertyDoesntExist.
-
-                        expr = (errorSuggestion ?? PropertyDoesntExist(target, restrictions)).Expression;
-                    }
+                    // If expr is not null, it's the fallback when no member exists.  If it is null,
+                    // the fallback is the result from PropertyDoesntExist.
+                    expr ??= (errorSuggestion ?? PropertyDoesntExist(target, restrictions)).Expression;
 
                     var method = isGeneric
                         ? CachedReflectionInfo.PSGetMemberBinder_TryGetGenericDictionaryValue.MakeGenericMethod(genericTypeArg)
@@ -5682,19 +5678,13 @@ namespace System.Management.Automation.Language
             restrictions = versionRestriction;
 
             // When returning aliasRestrictions always include the version restriction
-            if (aliasRestrictions != null)
-            {
-                aliasRestrictions.Add(versionRestriction);
-            }
+            aliasRestrictions?.Add(versionRestriction);
 
             var alias = memberInfo as PSAliasProperty;
             if (alias != null)
             {
                 aliasConversionType = alias.ConversionType;
-                if (aliasRestrictions == null)
-                {
-                    aliasRestrictions = new List<BindingRestrictions>();
-                }
+                aliasRestrictions ??= new List<BindingRestrictions>();
 
                 memberInfo = ResolveAlias(alias, target, aliases, aliasRestrictions);
                 if (memberInfo == null)
@@ -5745,10 +5735,7 @@ namespace System.Management.Automation.Language
                                 var methodInfo = member as MethodInfo;
                                 if (methodInfo != null && (methodInfo.IsPublic || methodInfo.IsFamily))
                                 {
-                                    if (candidateMethods == null)
-                                    {
-                                        candidateMethods = new List<MethodBase>();
-                                    }
+                                    candidateMethods ??= new List<MethodBase>();
 
                                     candidateMethods.Add(methodInfo);
                                 }
@@ -5841,10 +5828,7 @@ namespace System.Management.Automation.Language
             }
 
             var adapterSet = PSObject.GetMappedAdapter(obj, context?.TypeTable);
-            if (memberInfo == null)
-            {
-                memberInfo = adapterSet.OriginalAdapter.BaseGetMember<PSMemberInfo>(obj, member);
-            }
+            memberInfo ??= adapterSet.OriginalAdapter.BaseGetMember<PSMemberInfo>(obj, member);
 
             if (memberInfo == null && adapterSet.DotNetAdapter != null)
             {
@@ -6445,10 +6429,7 @@ namespace System.Management.Automation.Language
                 }
 
                 var adapterSet = PSObject.GetMappedAdapter(obj, context?.TypeTable);
-                if (memberInfo == null)
-                {
-                    memberInfo = adapterSet.OriginalAdapter.BaseGetMember<PSMemberInfo>(obj, member);
-                }
+                memberInfo ??= adapterSet.OriginalAdapter.BaseGetMember<PSMemberInfo>(obj, member);
 
                 if (memberInfo == null && adapterSet.DotNetAdapter != null)
                 {
@@ -6910,22 +6891,19 @@ namespace System.Management.Automation.Language
                     expr = Expression.Block(expr, ExpressionCache.AutomationNullConstant);
                 }
 
-                if (ExperimentalFeature.IsEnabled(ExperimentalFeature.PSAMSIMethodInvocationLogging))
-                {
-                    // Expression block runs two expressions in order:
-                    //  - Log method invocation to AMSI Notifications (can throw PSSecurityException)
-                    //  - Invoke method
-                    string targetName = methodInfo.ReflectedType?.FullName ?? string.Empty;
-                    expr = Expression.Block(
-                        Expression.Call(
-                            CachedReflectionInfo.MemberInvocationLoggingOps_LogMemberInvocation,
-                            Expression.Constant(targetName),
-                            Expression.Constant(name),
-                            Expression.NewArrayInit(
-                                typeof(object),
-                                args.Select(static e => e.Expression.Cast(typeof(object))))),
-                        expr);
-                }
+                // Expression block runs two expressions in order:
+                //  - Log method invocation to AMSI Notifications (can throw PSSecurityException)
+                //  - Invoke method
+                string targetName = methodInfo.ReflectedType?.FullName ?? string.Empty;
+                expr = Expression.Block(
+                    Expression.Call(
+                        CachedReflectionInfo.MemberInvocationLoggingOps_LogMemberInvocation,
+                        Expression.Constant(targetName),
+                        Expression.Constant(name),
+                        Expression.NewArrayInit(
+                            typeof(object),
+                            args.Select(static e => e.Expression.Cast(typeof(object))))),
+                    expr);
 
                 // If we're calling SteppablePipeline.{Begin|Process|End}, we don't want
                 // to wrap exceptions - this is very much a special case to help error
@@ -7260,14 +7238,11 @@ namespace System.Management.Automation.Language
         private static DynamicMetaObject GetTargetAsEnumerable(DynamicMetaObject target)
         {
             var enumerableTarget = PSEnumerableBinder.IsEnumerable(target);
-            if (enumerableTarget == null)
-            {
-                // Wrap the target in an array.
-                enumerableTarget = PSEnumerableBinder.IsEnumerable(
-                    new DynamicMetaObject(
-                        Expression.NewArrayInit(typeof(object), target.Expression.Cast(typeof(object))),
-                        target.GetSimpleTypeRestriction()));
-            }
+            // If null wrap the target in an array.
+            enumerableTarget ??= PSEnumerableBinder.IsEnumerable(
+                new DynamicMetaObject(
+                    Expression.NewArrayInit(typeof(object), target.Expression.Cast(typeof(object))),
+                    target.GetSimpleTypeRestriction()));
 
             return enumerableTarget;
         }
@@ -7374,11 +7349,15 @@ namespace System.Management.Automation.Language
                 return false;
             }
 
-            return args.All(element =>
-                            {
-                                var obj = PSObject.Base(element);
-                                return obj != null && obj.GetType().Equals(typeof(T));
-                            });
+            foreach (object element in args)
+            {
+                if (Adapter.GetObjectType(element, debase: true) != typeof(T))
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         internal static bool IsHeterogeneousArray(object[] args)
@@ -7406,11 +7385,15 @@ namespace System.Management.Automation.Language
                 return true;
             }
 
-            return args.Skip(1).Any(element =>
-                                    {
-                                        var obj = PSObject.Base(element);
-                                        return obj == null || !firstType.Equals(obj.GetType());
-                                    });
+            for (int i = 1; i < args.Length; i++)
+            {
+                if (Adapter.GetObjectType(args[i], debase: true) != firstType)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         internal static object InvokeAdaptedMember(object obj, string methodName, object[] args)

@@ -247,6 +247,8 @@ namespace System.Management.Automation
         {
             "cmd",
             "cscript",
+            "find",
+            "sqlcmd",
             "wscript",
         };
 
@@ -421,7 +423,7 @@ namespace System.Management.Automation
             catch (Exception)
             {
                 // Do cleanup in case of exception
-                CleanUp();
+                CleanUp(killBackgroundProcess: true);
                 throw;
             }
         }
@@ -443,7 +445,7 @@ namespace System.Management.Automation
             catch (Exception)
             {
                 // Do cleanup in case of exception
-                CleanUp();
+                CleanUp(killBackgroundProcess: true);
                 throw;
             }
         }
@@ -903,7 +905,7 @@ namespace System.Management.Automation
             finally
             {
                 // Do some cleanup
-                CleanUp();
+                CleanUp(killBackgroundProcess: false);
             }
 
             // An exception was thrown while attempting to run the program
@@ -1094,7 +1096,6 @@ namespace System.Management.Automation
         /// </summary>
         /// <param name="fileName"></param>
         /// <returns></returns>
-        [ArchitectureSensitive]
         private static bool IsWindowsApplication(string fileName)
         {
 #if UNIX
@@ -1105,10 +1106,9 @@ namespace System.Management.Automation
                 return false;
             }
 
-            SHFILEINFO shinfo = new SHFILEINFO();
-            IntPtr type = SHGetFileInfo(fileName, 0, ref shinfo, (uint)Marshal.SizeOf(shinfo), SHGFI_EXETYPE);
+            int type = Interop.Windows.SHGetFileInfo(fileName);
 
-            switch ((int)type)
+            switch (type)
             {
                 case 0x0:
                     // 0x0 = not an exe
@@ -1160,7 +1160,8 @@ namespace System.Management.Automation
         /// <summary>
         /// Aggressively clean everything up...
         /// </summary>
-        private void CleanUp()
+        /// <param name="killBackgroundProcess">If set, also terminate background process.</param>
+        private void CleanUp(bool killBackgroundProcess)
         {
             // We need to call 'NotifyEndApplication' as appropriate during cleanup
             if (_hasNotifiedBeginApplication)
@@ -1170,23 +1171,23 @@ namespace System.Management.Automation
 
             try
             {
-                if (_nativeProcess != null)
-                {
-                    // on Unix, we need to kill the process to ensure it terminates as Dispose() merely
-                    // closes the redirected streams and the processs does not exit on macOS.  However,
-                    // on Windows, a winexe like notepad should continue running so we don't want to kill it.
+                // on Unix, we need to kill the process (if not running in background) to ensure it terminates,
+                // as Dispose() merely closes the redirected streams and the process does not exit.
+                // However, on Windows, a winexe like notepad should continue running so we don't want to kill it.
 #if UNIX
+                if (killBackgroundProcess || !_isRunningInBackground)
+                {
                     try
                     {
-                        _nativeProcess.Kill();
+                        _nativeProcess?.Kill();
                     }
                     catch
                     {
-                        // Ignore all exception since it is cleanup.
+                        // Ignore all exceptions since it is cleanup.
                     }
-#endif
-                    _nativeProcess.Dispose();
                 }
+#endif
+                _nativeProcess?.Dispose();
             }
             catch (Exception)
             {
@@ -1380,7 +1381,12 @@ namespace System.Management.Automation
             string rawPath =
                 context.EngineSessionState.GetNamespaceCurrentLocation(
                     context.ProviderNames.FileSystem).ProviderPath;
-            startInfo.WorkingDirectory = WildcardPattern.Unescape(rawPath);
+
+            // Only set this if the PowerShell's current working directory still exists.
+            if (Directory.Exists(rawPath))
+            {
+                startInfo.WorkingDirectory = WildcardPattern.Unescape(rawPath);
+            }
 
             return startInfo;
         }
@@ -1569,7 +1575,7 @@ namespace System.Management.Automation
             }
             else
             {
-                extensionList = pathext.Split(Utils.Separators.Semicolon);
+                extensionList = pathext.Split(';');
             }
 
             foreach (string extension in extensionList)
@@ -1602,7 +1608,6 @@ namespace System.Management.Automation
         private static extern IntPtr FindExecutableW(
           string fileName, string directoryPath, StringBuilder pathFound);
 
-        [ArchitectureSensitive]
         private static string FindExecutable(string filename)
         {
             // Preallocate a
@@ -1631,38 +1636,6 @@ namespace System.Management.Automation
 
             return null;
         }
-
-        #endregion
-
-        #region Interop for SHGetFileInfo
-
-        private const int SCS_32BIT_BINARY = 0;  // A 32-bit Windows-based application
-        private const int SCS_DOS_BINARY = 1;  // An MS-DOS - based application
-        private const int SCS_WOW_BINARY = 2;  // A 16-bit Windows-based application
-        private const int SCS_PIF_BINARY = 3;  // A PIF file that executes an MS-DOS - based application
-        private const int SCS_POSIX_BINARY = 4;  // A POSIX - based application
-        private const int SCS_OS216_BINARY = 5;  // A 16-bit OS/2-based application
-        private const int SCS_64BIT_BINARY = 6;  // A 64-bit Windows-based application.
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct SHFILEINFO
-        {
-            public IntPtr hIcon;
-            public int iIcon;
-            public uint dwAttributes;
-
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-            public string szDisplayName;
-
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
-            public string szTypeName;
-        }
-
-        private const uint SHGFI_EXETYPE = 0x000002000; // flag used to ask to return exe type
-
-        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-        private static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes,
-            ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
 
         #endregion
 
@@ -2054,11 +2027,12 @@ namespace System.Management.Automation
             // Get the encoding for writing to native command. Note we get the Encoding
             // from the current scope so a script or function can use a different encoding
             // than global value.
-            Encoding pipeEncoding = _command.Context.GetVariableValue(SpecialVariables.OutputEncodingVarPath) as System.Text.Encoding ??
-                                    Utils.utf8NoBom;
+            Encoding outputEncoding = _command.Context.GetVariableValue(SpecialVariables.OutputEncodingVarPath) as Encoding;
 
-            _streamWriter = new StreamWriter(process.StandardInput.BaseStream, pipeEncoding);
-            _streamWriter.AutoFlush = true;
+            _streamWriter = new StreamWriter(process.StandardInput.BaseStream, outputEncoding ?? Encoding.Default)
+            {
+                AutoFlush = true
+            };
 
             _inputFormat = inputFormat;
 
@@ -2125,10 +2099,7 @@ namespace System.Management.Automation
         {
             if (_inputFormat == NativeCommandIOFormat.Xml)
             {
-                if (_xmlSerializer != null)
-                {
-                    _xmlSerializer.Done();
-                }
+                _xmlSerializer?.Done();
             }
             else // Text
             {
@@ -2149,15 +2120,15 @@ namespace System.Management.Automation
     /// Static class that allows you to show and hide the console window
     /// associated with this process.
     /// </summary>
-    internal static class ConsoleVisibility
+    internal static partial class ConsoleVisibility
     {
         /// <summary>
         /// If set to true, then native commands will always be run redirected...
         /// </summary>
         public static bool AlwaysCaptureApplicationIO { get; set; }
 
-        [DllImport("Kernel32.dll")]
-        internal static extern IntPtr GetConsoleWindow();
+        [LibraryImport("Kernel32.dll")]
+        internal static partial IntPtr GetConsoleWindow();
 
         internal const int SW_HIDE = 0;
         internal const int SW_SHOWNORMAL = 1;
@@ -2181,32 +2152,33 @@ namespace System.Management.Automation
         /// <param name="hWnd">The window to show...</param>
         /// <param name="nCmdShow">The command to do.</param>
         /// <returns>True if it was successful.</returns>
-        [DllImport("user32.dll")]
-        internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [LibraryImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         /// <summary>
         /// Code to allocate a console...
         /// </summary>
         /// <returns>True if a console was created...</returns>
-        [DllImport("kernel32.dll", SetLastError = true)]
+        [LibraryImport("kernel32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool AllocConsole();
+        internal static partial bool AllocConsole();
 
         /// <summary>
         /// Called to save the foreground window before allocating a hidden console window.
         /// </summary>
         /// <returns>A handle to the foreground window.</returns>
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetForegroundWindow();
+        [LibraryImport("user32.dll")]
+        private static partial IntPtr GetForegroundWindow();
 
         /// <summary>
         /// Called to restore the foreground window after allocating a hidden console window.
         /// </summary>
         /// <param name="hWnd">A handle to the window that should be activated and brought to the foreground.</param>
         /// <returns>True if the window was brought to the foreground.</returns>
-        [DllImport("user32.dll")]
+        [LibraryImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool SetForegroundWindow(IntPtr hWnd);
+        private static partial bool SetForegroundWindow(IntPtr hWnd);
 
         /// <summary>
         /// If no console window is attached to this process, then allocate one,
@@ -2292,10 +2264,10 @@ namespace System.Management.Automation
 
     /// <summary>
     /// Exception used to wrap the error coming from
-    /// remote instance of Msh.
+    /// remote instance of PowerShell.
     /// </summary>
     /// <remarks>
-    /// This remote instance of Msh can be in a separate process,
+    /// This remote instance of PowerShell can be in a separate process,
     /// appdomain or machine.
     /// </remarks>
     [Serializable]
@@ -2389,7 +2361,7 @@ namespace System.Management.Automation
         private readonly PSObject _serializedRemoteInvocationInfo;
 
         /// <summary>
-        /// Original Serialized Exception from remote msh.
+        /// Original Serialized Exception from remote PowerShell.
         /// </summary>
         /// <remarks>This is the exception which was thrown in remote.
         /// </remarks>
@@ -2405,7 +2377,7 @@ namespace System.Management.Automation
         /// InvocationInfo, if any, associated with the SerializedRemoteException.
         /// </summary>
         /// <remarks>
-        /// This is the serialized InvocationInfo from the remote msh.
+        /// This is the serialized InvocationInfo from the remote PowerShell.
         /// </remarks>
         public PSObject SerializedRemoteInvocationInfo
         {

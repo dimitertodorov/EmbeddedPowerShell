@@ -286,15 +286,9 @@ namespace System.Management.Automation.Remoting
             }
 
             // assign defaults after parsing the xml content.
-            if (result.MaxReceivedObjectSizeMB == null)
-            {
-                result.MaxReceivedObjectSizeMB = BaseTransportManager.MaximumReceivedObjectSize;
-            }
+            result.MaxReceivedObjectSizeMB ??= BaseTransportManager.MaximumReceivedObjectSize;
 
-            if (result.MaxReceivedCommandSizeMB == null)
-            {
-                result.MaxReceivedCommandSizeMB = BaseTransportManager.MaximumReceivedDataSize;
-            }
+            result.MaxReceivedCommandSizeMB ??= BaseTransportManager.MaximumReceivedDataSize;
 
             return result;
         }
@@ -1740,10 +1734,7 @@ namespace System.Management.Automation.Remoting
             bool validateFile = false)
         {
             _configFile = configFile;
-            if (roleVerifier == null)
-            {
-                roleVerifier = static (role) => false;
-            }
+            roleVerifier ??= static (role) => false;
 
             Runspace backupRunspace = Runspace.DefaultRunspace;
 
@@ -1938,13 +1929,13 @@ namespace System.Management.Automation.Remoting
             string moduleName = "*";
             if (roleCapability.Contains('\\'))
             {
-                string[] components = roleCapability.Split(Utils.Separators.Backslash, 2);
+                string[] components = roleCapability.Split('\\', 2);
                 moduleName = components[0];
                 roleCapability = components[1];
             }
 
             // Go through each directory in the module path
-            string[] modulePaths = ModuleIntrinsics.GetModulePath().Split(Utils.Separators.PathSeparator);
+            string[] modulePaths = ModuleIntrinsics.GetModulePath().Split(Path.PathSeparator);
             foreach (string path in modulePaths)
             {
                 try
@@ -2994,7 +2985,7 @@ namespace System.Management.Automation.Remoting
         };
 #endif
 
-        // These are configuration options for WSMan (WinRM) endpoint configurations, that 
+        // These are configuration options for WSMan (WinRM) endpoint configurations, that
         // appearand in .pssc files, but are not part of PowerShell InitialSessionState.
         private static readonly HashSet<string> UnsupportedConfigOptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -3031,6 +3022,6 @@ namespace System.Management.Automation.Remoting
     }
 
     #endregion
-    
+
     #endregion
 }
